@@ -138,12 +138,16 @@ public enum ChartIQDrawingTool: Int {
     case rectangle
     case segment
     case verticalLine
+    case average
+    case crossline
+    case regression
+    case arrow
 }
 
 /// Chart that draw ChartIQ chart.
 public class ChartIQView: UIView {
 
-    var webView: WKWebView!
+    public var webView: WKWebView!
     
     // MARK: - Properties
     static internal var url = ""
@@ -189,9 +193,9 @@ public class ChartIQView: UIView {
         return _dataMethod
     }
     
-    weak open var dataSource: ChartIQDataSource?
+    public var dataSource: ChartIQDataSource?
     
-    weak open var delegate: ChartIQDelegate?
+    public var delegate: ChartIQDelegate?
     
     public var symbol: String {
         return webView.evaluateJavaScriptWithReturn("stxx.chart.symbol") ?? ""
@@ -317,11 +321,11 @@ public class ChartIQView: UIView {
     internal func initialize() {
         setupWebView()
 //        NotificationCenter.default.addObserver(self, selector: #selector(ChartIQView.applicationWillResignActive), name: NSNotification.Name.UIApplicationWillResignActive, object: nil)
-//        NotificationCenter.default.addObserver(self, selector: #selector(ChartIQView.applicationDidBecomeActive),	 name: NSNotification.Name.UIApplicationDidBecomeActive, object: nil)
+//        NotificationCenter.default.addObserver(self, selector: #selector(ChartIQView.applicationDidBecomeActive),     name: NSNotification.Name.UIApplicationDidBecomeActive, object: nil)
     }
     
     /// Cleans up the message handlers in order to avoid a memory leak.
-    /// Should be called when the view is about to get deallocated (e.g. the deinit of its superview)    
+    /// Should be called when the view is about to get deallocated (e.g. the deinit of its superview)
     public func cleanup() {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: ChartIQCallbackMessage.accessibility.rawValue)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: ChartIQCallbackMessage.newSymbol.rawValue)
@@ -330,6 +334,10 @@ public class ChartIQView: UIView {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: ChartIQCallbackMessage.pullPaginationData.rawValue)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: ChartIQCallbackMessage.layout.rawValue)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: ChartIQCallbackMessage.drawing.rawValue)
+    }
+    
+    deinit {
+        self.cleanup()
     }
     
     /// Sets your webview url here.
@@ -370,14 +378,17 @@ public class ChartIQView: UIView {
         userContentController.addUserScript(layoutScript)
         userContentController.addUserScript(drawingScript)
         
-        userContentController.add(self, name: ChartIQCallbackMessage.accessibility.rawValue)
-        userContentController.add(self, name: ChartIQCallbackMessage.newSymbol.rawValue)
-        userContentController.add(self, name: ChartIQCallbackMessage.pullInitialData.rawValue)
-        userContentController.add(self, name: ChartIQCallbackMessage.pullUpdateData.rawValue)
-        userContentController.add(self, name: ChartIQCallbackMessage.pullPaginationData.rawValue)
-        userContentController.add(self, name: ChartIQCallbackMessage.layout.rawValue)
-        userContentController.add(self, name: ChartIQCallbackMessage.drawing.rawValue)
-        userContentController.add(self, name: ChartIQCallbackMessage.log.rawValue)
+        // Plus500 custom code - Added leak avoider in order to release the webview when needed - https://stackoverflow.com/questions/26383031/wkwebview-causes-my-view-controller-to-leak/26383032#26383032
+        let leakAvoider = LeakAvoider(delegate: self)
+        
+        userContentController.add(leakAvoider, name: ChartIQCallbackMessage.accessibility.rawValue)
+        userContentController.add(leakAvoider, name: ChartIQCallbackMessage.newSymbol.rawValue)
+        userContentController.add(leakAvoider, name: ChartIQCallbackMessage.pullInitialData.rawValue)
+        userContentController.add(leakAvoider, name: ChartIQCallbackMessage.pullUpdateData.rawValue)
+        userContentController.add(leakAvoider, name: ChartIQCallbackMessage.pullPaginationData.rawValue)
+        userContentController.add(leakAvoider, name: ChartIQCallbackMessage.layout.rawValue)
+        userContentController.add(leakAvoider, name: ChartIQCallbackMessage.drawing.rawValue)
+        userContentController.add(leakAvoider, name: ChartIQCallbackMessage.log.rawValue)
 
         // Create the configuration with the user content controller
         let configuration = WKWebViewConfiguration()
@@ -417,6 +428,7 @@ public class ChartIQView: UIView {
     ///
     /// - Parameter method: The data method
     public func setDataMethod(_ method: ChartIQDataMethod) {
+        clear()
         _dataMethod = method
         let script = "determineOs()"
         webView.evaluateJavaScript(script, completionHandler: nil)
@@ -504,7 +516,7 @@ public class ChartIQView: UIView {
     ///   - symbol: The symbol for the new chart - a symbol string
     ///   - color: Color to draw line
     public func addComparisonSymbol(_ symbol: String, color: UIColor = UIColor.red) {
-        let addSeriesScript = "stxx.addSeries(\"\(symbol)\", {display:\"\(symbol)\", color: \"\(color.toHexString())\", isComparison:true});"
+        let addSeriesScript = "stxx.addSeries(\"\(symbol)\", {display:\"\(symbol)\", color: \"\(color.toHexString())\"  isComparison:true});"
 
         webView.evaluateJavaScript(addSeriesScript, completionHandler: nil)
     }
@@ -547,22 +559,17 @@ public class ChartIQView: UIView {
     ///   - property: The property name of the object you wish to change
     ///   - value: The value to assign to the property
     public func setChartProperty(_ property: String, value: Any) {
-        var script = ""
-        if value is String {
-            script = "stxx.chart.\(property) = \"\(value)\";"
-        } else {
-            script = "stxx.chart.\(property) = \(value);"
-        }
-
+        let script = "stxx.chart.\(property) = \"\(value)\";"
         webView.evaluateJavaScript(script, completionHandler: nil)
     }
     
-    /// Get a property value on the chart.
+    /// get a property value on the chart
     ///
     /// - Parameters:
-    ///   - property: The property name of the object you wish to receive.
-    public func getChartProperty(_ property: String) -> String? {
-      return webView.evaluateJavaScriptWithReturn("getChartProperty(\"\(property)\");")
+    ///   - property: The property name of the object you wish to receive
+    public func getChartProperty(_ property: String) -> String {
+        let script = "stxx.chart.\(property);"
+        return webView.evaluateJavaScriptWithReturn(script)!
     }
     
     /// Change a property value on the chart engine
@@ -571,22 +578,17 @@ public class ChartIQView: UIView {
     ///   - property: The property name of the object you wish to change
     ///   - value: The value to assign to the property
     public func setEngineProperty(_ property: String, value: Any) {
-        var script = ""
-        if value is String {
-            script = "stxx.\(property) = \"\(value)\";"
-        } else {
-            script = "stxx.\(property) = \(value);"
-        }
-
+        let script = "stxx.\(property) = \"\(value)\";"
         webView.evaluateJavaScript(script, completionHandler: nil)
     }
     
-    /// Get a property value on the chart engine.
+    // get a property value on the chart engine
     ///
     /// - Parameters:
-    ///   - property: The property name of the object you wish to receive.
-    public func getEngineProperty(_ property: String) -> String? {
-      return webView.evaluateJavaScriptWithReturn("getEngineProperty(\"\(property)\");")
+    ///   - property: The property name of the object you wish to receive
+    public func getEngineProperty(_ property: String) -> String {
+        let script = "stxx.\(property);"
+        return webView.evaluateJavaScriptWithReturn(script)!
     }
     
     /// Turns crosshairs on
@@ -609,7 +611,7 @@ public class ChartIQView: UIView {
         return webView.evaluateJavaScriptWithReturn(script) == "true"
     }
     
-    /// Gets crosshair highlighted price data for HUD 
+    /// Gets crosshair highlighted price data for HUD
     public func getCrosshairsHUDDetail() -> CrosshairHUD? {
         let script = "getHudDetails();"
         let result = webView.evaluateJavaScriptWithReturn(script)
@@ -762,14 +764,13 @@ public class ChartIQView: UIView {
             "var helper = new CIQ.Studies.DialogHelper({sd:selectedSd,stx:stxx}); " +
             "var isFound = false; " +
             "var newInputParameters = {}; " +
-            "var newOutputParameters = {}; " +
-            "var newParameterParameters = {}; "
+            "var newOutputParameters = {}; "
     
         parameters.forEach { (parameter) in
             script += getUpdateStudyParametersScript(parameter: parameter.key, value: parameter.value)
         }
         
-        script += "helper.updateStudy({inputs:newInputParameters, outputs:newOutputParameters, parameters: newParameterParameters}); "
+        script += "helper.updateStudy({inputs:newInputParameters, outputs:newOutputParameters}); "
         
         webView.evaluateJavaScript(script, completionHandler: nil)
     }
@@ -806,7 +807,7 @@ public class ChartIQView: UIView {
         }
         
         let script = "addStudy('\(name)', \(_inputs), \(_outputs));"
-        webView.evaluateJavaScript(script, completionHandler: nil)        
+        webView.evaluateJavaScript(script, completionHandler: nil)
     }
     
     /// Removes study from the Chart.
@@ -895,6 +896,10 @@ public class ChartIQView: UIView {
         case .rectangle: return "rectangle"
         case .segment: return "segment"
         case .verticalLine: return "vertical"
+        case .average: return "average"
+        case .crossline: return "crossline"
+        case .regression: return "regression"
+        case .arrow: return "arrow"
         }
     }
     
@@ -1008,7 +1013,7 @@ public class ChartIQView: UIView {
             "   var input = helper.inputs[x]; " +
             "   if (input[\"name\"] === \"\(parameter)\") { " +
             "       isFound = true; " +
-            "       if (input[\"type\"] === \"text\" || input[\"type\"] === \"select\" || input[\"type\"] === \"date\" || input[\"type\"] === \"time\") { " +
+            "       if (input[\"type\"] === \"text\" || input[\"type\"] === \"select\") { " +
             "           newInputParameters[\"\(parameter)\"] = \"\(value)\"; " +
             "       } else if (input[\"type\"] === \"number\") { " +
             "           newInputParameters[\"\(parameter)\"] = parseFloat(\"\(value)\"); " +
@@ -1021,16 +1026,8 @@ public class ChartIQView: UIView {
             "   for (x in helper.outputs) { " +
             "       var output = helper.outputs[x]; " +
             "       if (output[\"name\"] === \"\(parameter)\") { " +
-            "           isFound = true; " +
             "           newOutputParameters[\"\(parameter)\"] = \"\(value)\"; " +
             "       } " +
-            "   } " +
-            "} " +
-            "if (isFound == false) { " +
-            "   if ( \"\(parameter)\" === \"studyOverBoughtValue\" || \"\(parameter)\" === \"studyOverSoldValue\" ) {" +
-            "       newParameterParameters[\"\(parameter)\"] = parseFloat(\"\(value)\"); " +
-            "   }else{" +
-            "       newParameterParameters[\"\(parameter)\"] = \"\(value)\"; " +
             "   } " +
             "} " +
             "isFound = false;"
@@ -1072,13 +1069,6 @@ public class ChartIQView: UIView {
         let jsonString = String(data: jsonData, encoding: .utf8)
         print(jsonString!)
         return jsonString ?? ""
-    }
-    
-    /// Helper to get the current webview
-    ///
-    /// - Returns: the current webview
-    public func getWebView() -> WKWebView {
-        return webView
     }
     
 }
@@ -1170,7 +1160,7 @@ extension ChartIQView: WKScriptMessageHandler {
                     let volume = fieldsArray[5]
                     
                     // the below is very clunky, find a better way in the future
-                    // maybe first idea of passing in fields to library instead 
+                    // maybe first idea of passing in fields to library instead
                     // of getting everything back
                     var selectedFields = ""
                     
@@ -1231,4 +1221,16 @@ extension ChartIQView : WKNavigationDelegate {
         delegate?.chartIQViewDidFinishLoading(self)
     }
 
+}
+
+
+class LeakAvoider : NSObject, WKScriptMessageHandler {
+    weak var delegate : WKScriptMessageHandler?
+    init(delegate:WKScriptMessageHandler) {
+        self.delegate = delegate
+        super.init()
+    }
+    func userContentController(_ userContentController: WKUserContentController,didReceive message: WKScriptMessage) {
+        self.delegate?.userContentController(userContentController, didReceive: message)
+    }
 }

@@ -12,4 +12,10 @@ extension String: Error {
     var hex: Int? {
         return Int(self, radix: 16)
     }
+    public var asInt32 :Int32?{
+        Int32(self)
+    }
+    public var asInt :Int?{
+        Int(self)
+    }
 }
